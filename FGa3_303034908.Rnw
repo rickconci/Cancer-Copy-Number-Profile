@@ -1,0 +1,608 @@
+% Tell Rstudio this is a knitr document
+% !Rnw weave = knitr
+\documentclass[12pt]{article}
+\usepackage{mathpazo}
+\usepackage{hyperref,url}
+\usepackage[a4paper,margin=1.5cm]{geometry}
+
+
+\setlength{\textfloatsep}{6pt plus 1.0pt minus 2.0pt}
+\setlength{\floatsep}{6pt plus 1.0pt minus 2.0pt}
+\setlength{\dblfloatsep}{6pt plus 1.0pt minus 2.0pt}
+\setlength{\dbltextfloatsep}{6pt plus 1.0pt minus 2.0pt}
+\setlength{\dblfloatsep}{6pt plus 1.0pt minus 2.0pt}
+
+\newcommand{\Slang}{\texttt{S} }
+\newcommand{\R}{\texttt{R} }
+\newcommand{\Rfunction}[1]{{\texttt{#1}}}
+  \newcommand{\Robject}[1]{{\texttt{#1}}}
+    \newcommand{\Rpackage}[1]{{\mbox{\normalfont\textsf{#1}}}}
+      
+      \usepackage{xcolor}
+      \definecolor{Red}{rgb}{0.7,0,0}
+      \definecolor{Blue}{rgb}{0,0,0.8}
+      
+      \usepackage{hyperref}
+      \hypersetup{%
+        pdfusetitle,
+        bookmarks = {true},
+        bookmarksnumbered = {true},
+        bookmarksopen = {true},
+        bookmarksopenlevel = 2,
+        unicode = {true},
+        breaklinks = {false},
+        hyperindex = {true},
+        colorlinks = {true},
+        linktocpage = {true},
+        plainpages = {false},
+        linkcolor = {Blue},
+        citecolor = {Blue},
+        urlcolor = {Red},
+        pdfstartview = {Fit},
+        pdfpagemode = {UseOutlines},
+        pdfview = {XYZ null null null}
+      }
+      
+      \begin{document}
+
+      \title{Scientific Programming assignment 2}
+      \author{303034908}
+      
+      \date{\today}
+      \maketitle
+      
+      <<setup, eval=TRUE, include=FALSE>>=
+      require(knitr)
+      require(xtable)
+      opts_chunk$set(cache=FALSE)      # $ (dollar needed by Emacs.)
+      
+      set.seed(5432)
+
+      setwd("~/Desktop/code/CompBio MPhil/Functional Genomics/FGa3")
+      library(bit64)
+      
+      chroms <- read.delim("hg19.chrom.sizes.txt", header = FALSE)
+      chroms$V3 <- cumsum(as.numeric(chroms$V2))
+      chroms$V4 <- chroms$V3- chroms$V2 
+      chroms$V1 <- gsub("chr", "", as.character(chroms$V1))
+      chroms[, c(2:4)] <- chroms[, c(2:4)]/1000 
+      #divide by 1000 so as to work with integers of that size
+      
+      @ 
+       
+       
+       \section*{Write a copy number profile simulator}
+
+       \texttt{simulate.copy.number.profile} starts by choosing a number over a uniform 
+       distribution from 1 to the 
+       total size of the human genome, such that the probability of choosing any one chromosome 
+       is related to the size of the chromosome compared to the whole genome. Once a chromosome
+       is selected, two numbers from a uniform distribution between 1 and the size of the 
+       chromosome are selected. This is done using the \texttt{find.segment} function. 
+       The segment is given a copy number change, randomly assigned by sampling a set of possible
+       copy number chages.
+       
+       If a chromosome selection is repeated, the new segment is tested and if needed, adjusted. 
+       This is done using the \texttt{adjust.segment} function. 
+       The testing consists of taking the segment start and checking if the next segment start/finish
+       in the list of previous segments is further than 1 mega bases (MB). If so, the new segment is adjusted 
+       such that its end is within the next point while still keeping the 1MB minimum distance.
+       If instead the start of the new segment is after the end of any old segments, no adjustment 
+       occurs. Finally, if the distance between the start of the new segment and the start/end of the old
+       segments is less than 1MB, the new segment is recalculated and re-submitted for adjustment. 
+       
+       \vspace{5mm}
+       
+       This simulator makes a few assumptions. Firstly, that copy number changes occur uniformly 
+       across chromosomes, as well as within a chromosome. In reality there may indeed by regions
+       of the genome that are more fragile that others, as well as regions in each chromosome that 
+       are more likely to have copy number changes. For the sake of the simulation as a way to test
+       methods to convert relative to absolute copy number profiles, these details may not be vital.
+       
+       Secondly, copy number changes are independent of each other and happen sequentially. This 
+       also might not be the case as a broken region of a chromosome may lead to greater instability
+       and, therefore, more copy number changes. 
+       
+       \vspace{5mm}
+       
+       To help with the simulation, a file called "hg19.chrom.sizes.txt" is read into the variable
+       \texttt{chroms}. \texttt{chroms} is then adjusted such that the cumulative sum of the chromosome
+       sizes is added to column 3, and the beginning of each chromosome in column 4. Finally all the numbers
+       are divided by 1000 to make further calculations possible, as otherwise the numbers are too large. 
+       
+       <<cnvsimulator, eval=TRUE, include=TRUE >>=
+       
+       find.segment <- function(chrom){
+        repeat {
+          segment <- sort(as.integer(runif(2, min=0, max=(as.numeric(chrom$V2)))))
+          distance <- (max(segment) - min(segment))
+          if (distance > 1000 && distance  < 100000) {return(segment)}
+          #1000 and 100000 as chromosome sizes divided by 1000 initially
+        }
+      }
+      
+      adjust.segment <- function(chrom, segment,cnv.profile){
+        #test if chromosome has already been selected
+        if (sum(grepl(chrom$V1,cnv.profile[,1]) >= 1)) {
+          past.segments <- cnv.profile[grep(chrom$V1,cnv.profile[,1]), c(2,3)]
+          past.segments <- sort(as.numeric(past.segments),decreasing=FALSE)
+          next.max <- past.segments[min(segment)<past.segments][1]
+          if (min(segment) > max(past.segments)){
+            return(segment) #no danger of overlapping
+          }
+          if  (next.max - min(segment ) > 1000){
+            new.segment <- c(min(segment), as.integer(runif(2, min=min(segment)+1000, 
+                                                            max = next.max)))
+            #print("adjusted segment!")
+            #can adjust so it finishes before the next.max but after 1MB
+            return(new.segment)
+          }else{
+            segment <- find.segment(chrom)
+            return(adjust.segment(chrom, segment,cnv.profile))
+            #recalculate as not possible to adjust
+          } 
+        }else {
+          return(segment)
+        }
+      }
+      
+      simulate.copy.number.profile <- function(num, full.chrom, base, type){
+        cnv.profile <- matrix(0, nrow=num, ncol=4)
+        for (n in 1:num){
+          chrom <- as.integer(runif(1, min=1, max=(max(full.chrom$V3))))
+          chrom <- full.chrom[chrom<chroms$V3,][1,]
+          segment <- find.segment(chrom)
+          segment <- adjust.segment(chrom, segment,cnv.profile)
+          if (type == 'diploid.single' ){
+            event <- sample(c(1,-1), 1, replace=TRUE)  
+          } else if (type== 'diploid.double'){
+            event <- sample(c(2,1,-1,-2), 1, replace=TRUE) 
+          }else if (type == 'diploid.double.noise'){
+            event <- sample(rnorm(4, mean=c(2,1,-1,-2), sd=0.1), 1, replace=TRUE) 
+          } else if (type == 'tetraploid.noise'){
+            event <- sample(rnorm(8, mean=c(4,3,2,1,-1,-2,-3,-4), sd=0.1), 1, 
+                            replace=TRUE) 
+          }
+          cnv.profile[n,] <- c(as.character(chrom$V1),min(segment), max(segment),
+                               base+event)
+        }
+        cnv.profile.df <- data.frame(cnv.profile)
+        cnv.profile.df$X1 <- as.numeric(cnv.profile.df$X1)
+        cnv.profile.df <- cnv.profile.df[order(cnv.profile.df$X1),]
+        cnv.profile <- as.matrix(cnv.profile.df)
+        return(cnv.profile)
+      }
+                   
+       @
+       
+      A further function was written to plot copy number changes. 
+       
+      <<plotcnv, eval=TRUE, include=TRUE >>=
+      
+      plot.cnv <- function(cnv.profile, base, chroms, ...){
+        # initialise the final vector to be plotted
+        genome <- matrix(0, nrow=2 , ncol=(max(chroms$V3)))  
+        genome[1,] <- c(1:(max(chroms$V3)))
+        genome[2,] <- base 
+        #base=NA if plotting from test data, otherwise 2 if diploid 
+        #or 4 if tetraploid 
+        for (ii in 1:dim(cnv.profile)[1]){
+          #convert segment start and end relative to chromosome start 
+          #to relative to genome start
+          start <- chroms[as.numeric(cnv.profile[ii,1]), 4] + 
+            as.numeric(cnv.profile[ii,2])
+          end <- chroms[as.numeric(cnv.profile[ii,1]), 4] + 
+            as.numeric(cnv.profile[ii,3])
+          genome[2, start:end] <- as.numeric(cnv.profile[ii,4])
+        }
+        #sample every 50 so as to speed up plotting operation
+        short.x <- genome[1,][seq(1, length(genome[1,]), by=50)]
+        short.y <- genome[2,][seq(1, length(genome[2,]), by=50)]
+        plot(x = short.x, y=short.y, type="p", pch=20, cex=0.5, 
+             xaxt='n', xlim=c(0,max(chroms$V3)), xlab="",
+             ylab="Copy numbers", 
+             xaxs = "i", ...)
+        title(main=paste(dim(cnv.profile)[1], "copy number changes"),
+              line=1)
+        title(xlab="Chromosomes", line=1)
+        #annotate plot
+        abline(v = c(0,as.numeric(chroms$V3)), col="black")
+        at.vector <- as.numeric(chroms$V3 - chroms$V4)/2 + chroms$V4
+        names <- as.character(chroms$V1)
+        for (jj in 1:dim(chroms)[1]){
+          mtext(names[jj], side=1, at= at.vector[jj], cex=0.6)
+        }
+      }
+      
+      
+      @
+      
+      Below are the plots for each of the 5 copy number profiles, with 3, 
+      10, 25, 100 and 250 copy number changes, defined as single copy changes on a diploid background.
+      
+      
+      <<plotone, eval=TRUE, include=TRUE, out.width='1\\linewidth', fig.align='center'>>=
+      cnv.profile.3 <- simulate.copy.number.profile(3, chroms, base = 2, 
+                                                    type='diploid.single')
+      cnv.profile.10 <- simulate.copy.number.profile(10, chroms, base = 2,
+                                                     type='diploid.single')
+      cnv.profile.25 <- simulate.copy.number.profile(25, chroms, base = 2, 
+                                                     type='diploid.single')
+      cnv.profile.100 <- simulate.copy.number.profile(100, chroms, base = 2, 
+                                                      type='diploid.single')
+      cnv.profile.250 <- simulate.copy.number.profile(250, chroms, base = 2, 
+                                                      type='diploid.single')
+
+      
+      par(mfrow=c(5,1),mar=c(2,7,2,7))
+      plot.cnv(cnv.profile.3,  base=2, chroms)
+      plot.cnv(cnv.profile.10,  base=2, chroms)
+      plot.cnv(cnv.profile.25,  base=2, chroms)
+      plot.cnv(cnv.profile.100,  base=2, chroms)
+      plot.cnv(cnv.profile.250,  base=2, chroms)
+      
+      @
+      
+      \section*{Generate copy number profiles with noise}
+      
+      5 copy number profiles with 3, 10, 25, 100, 200 copy number changes are simulated, 
+      this time taking the copy number from \texttt{sample(rnorm(4, mean=c(2,1,-1,-2), sd=0.1), 1) }: 
+      a two copy change each with noise as a gaussian distribution with standard deviation of 0.1. 
+
+      
+      <<plottwo, eval=TRUE, include=TRUE, out.width='1\\linewidth', fig.align='center'>>=
+      cnv.profile.3 <- simulate.copy.number.profile(3, chroms, base = 2, 
+                                                    type='diploid.double.noise')
+      cnv.profile.10 <- simulate.copy.number.profile(10, chroms, base = 2, 
+                                                     type='diploid.double.noise')
+      cnv.profile.25 <- simulate.copy.number.profile(25, chroms, base = 2, 
+                                                     type='diploid.double.noise')
+      cnv.profile.100 <- simulate.copy.number.profile(100, chroms, base = 2, 
+                                                      type='diploid.double.noise')
+      cnv.profile.250 <- simulate.copy.number.profile(250, chroms, base = 2,
+                                                      type='diploid.double.noise')
+
+      
+      par(mfrow=c(5,1),mar=c(2,7,2,7))
+      plot.cnv(cnv.profile.3,  base=2, chroms)
+      plot.cnv(cnv.profile.10,  base=2, chroms)
+      plot.cnv(cnv.profile.25,  base=2, chroms)
+      plot.cnv(cnv.profile.100,  base=2, chroms)
+      plot.cnv(cnv.profile.250,  base=2, chroms)
+      
+      @
+      
+      \section*{Generate copy number profiles with a tetraploid background}
+      
+      Finally, 5 copy number profiles with 3, 10, 25, 100, 200 copy number changes were simulated, 
+      this time using a tetraploid background instead of diploid. To sample a copy number changes
+      with noise from a tetraploid background, the function 
+      \texttt{sample(rnorm(8, mean=c(4,3,2,1,-1,-2,-3,-4), sd=0.1), 1, replace=TRUE) } was used. 
+      
+       
+      <<plotthree, eval=TRUE, include=TRUE, out.width='1\\linewidth', fig.align='center'>>=
+      cnv.profile.3 <- simulate.copy.number.profile(3, chroms, base = 4, 
+                                                    type='tetraploid.noise')
+      cnv.profile.10 <- simulate.copy.number.profile(10, chroms, base = 4, 
+                                                     type='tetraploid.noise')
+      cnv.profile.25 <- simulate.copy.number.profile(25, chroms, base = 4, 
+                                                     type='tetraploid.noise')
+      cnv.profile.100 <- simulate.copy.number.profile(100, chroms, base = 4, 
+                                                      type='tetraploid.noise')
+      cnv.profile.250 <- simulate.copy.number.profile(250, chroms, base = 4, 
+                                                      type='tetraploid.noise')
+
+      
+      par(mfrow=c(5,1),mar=c(2,7,2,7))
+      plot.cnv(cnv.profile.3,  base=4, chroms)
+      plot.cnv(cnv.profile.10,  base=4, chroms)
+      plot.cnv(cnv.profile.25,  base=4, chroms)
+      plot.cnv(cnv.profile.100,  base=4, chroms)
+      plot.cnv(cnv.profile.250,  base=4, chroms)
+      
+      @
+      
+      
+      \section*{Develop a method for assessing the difference between a copy number profile
+      and integer copy number states}
+      
+      As measure to determine how close a number is to integer values, the z-score, the number of 
+      standard deviations (std) from a mean, was used. 
+      The Z-score is calculated using the equation below:
+      
+      
+      \begin{equation}
+        Zscore = \frac{x - \mu}{\sigma}
+      \end{equation}
+      
+      Where $x$ is the value, $\mu$ is the mean and $\sigma$ is the standard deviation. 
+      In this method, the value is the copy number change, the mean an integer, 
+      and the standard deviation is set to 0.1. 
+      
+      \section*{Generate a relative copy number profile}
+      
+      The \texttt{simulate.copy.number.profile} function above returns absolute copy number profiles.
+      To turn these into relative copy number profiles, each copy number needs to be median normalised,
+      the median often being the base copy number of the cell, i.e. 2 if diploid or 4 if tetraploid.
+      
+      <<relateivecopynumber, fig.height =3, out.width='0.9\\linewidth', fig.align='center'>>=
+      
+      cnv.profile.10 <- simulate.copy.number.profile(10, chroms, base = 2,
+                                                     type='diploid.single')
+      
+      convert.to.relative <- function(cnv.profile, base){
+        cnv.profile[,4] <- as.character(as.numeric(cnv.profile[,4])/base)
+        return(cnv.profile)
+      }
+      cnv.profile.10.relative <- convert.to.relative(cnv.profile.10, base=2)
+      
+      par(mfrow=c(1,1), mar=c(4,4,4,2))
+      plot.cnv(cnv.profile.10.relative, base=1, chroms, yaxt='n',  ylim=c(0,2))
+      axis(2, at=c(0,0.5,1,1.5,2), labels=c(0,0.5,1,1.5,2))
+      
+      @
+      
+      \section*{Transform relative copy number profile to absolute}
+      
+      The choice of scaling factor to recover the abolute copy number from relative 
+      can be thought of
+      as a minimisation of the sum of all the z-scores for each scaling factor. 
+      In other words,
+      for each scaling factor the z-score is calculated for each copy number against
+      a set of integers. Each score is then held in 3 dimensional array, and turned to
+      a 2 dimentional 
+      matrix by summing over all the copy numbers for each integer and each 
+      scaling factor. 
+      Finally, the scaling factors that give the smallest sum of z-scores are selected. 
+      
+      
+      <<scalingfactor, eval=TRUE, include=TRUE>>=
+     minimize.z <- function(cnv.profile){
+      #set of scaling factors to iterate over
+      scaling.factors <- seq(from=1, to=10, by = 0.05)
+      #set of copy numbers to iterate over
+      copy.numbers <- as.numeric(cnv.profile[,4])
+      #set of integers to iterate over
+      integers <- 1:(max(ceiling(copy.numbers))*max(scaling.factors))
+      #3D array with Z-scores for all iterations
+      scaled.z.scores <- array(0, dim=c(length(integers), length(copy.numbers), 
+                                        length(scaling.factors)))
+      #2D matrix of integer copy number post scaling per scaling factor
+      scaled.intg <- matrix(0, nrow=length(copy.numbers), ncol=length(scaling.factors))
+      #2D matrix of minimum z-scores of each copy number per scaling factor
+      scaled.min.z <- matrix(0, nrow=length(copy.numbers), ncol=length(scaling.factors))
+      for (s in 1:length(scaling.factors)){
+        for (event in 1:length(copy.numbers)){
+          for (i in 1:length(integers)){
+            #measure z-score
+            scaled.z.scores[i, event, s] <- (copy.numbers[event]*scaling.factors[s] 
+                                             - (integers[i]-1)) / 0.1 #std
+          }
+        }
+        #find lowest z-score for each copy number across set of integers
+        scaled.min.z[,s] <- apply(scaled.z.scores[, , s], 2, function(x) min(abs(x)))
+      }
+      #select scaling factors that give loweest sum of z-scores 
+      final.scaling.idxs <- which(colSums(abs(scaled.min.z)) == 
+                                    min(colSums(abs(scaled.min.z))))
+      best.final.scaling.idx <- final.scaling.idxs[1] # take the 1st if many
+      scaled.cnv.profile <- cbind(cnv.profile, as.character(
+        copy.numbers*(scaling.factors[best.final.scaling.idx] )))
+      scaled.cnv.profile <- cbind(scaled.cnv.profile, as.character
+                                  (scaled.min.z[,best.final.scaling.idx]))
+      print(paste('The optimal scaling factor is', 
+                  scaling.factors[best.final.scaling.idx]))
+      return(list(scaled.min.z, scaled.cnv.profile, 
+                  as.numeric(scaling.factors[best.final.scaling.idx])))
+    }
+      
+      
+      @
+      
+      
+      Once the optimal scaling factor is found, the relative copy numbers can be multiplied
+      by this scaling factor to recover the absolute copy number profile.
+      
+      <<plotscaledcnvfunction, eval=TRUE, include=FALSE>>=
+       plot.scaled.cnv <- function(cnv.profile, base, chroms, ...){
+        # initialise the final vector to be plotted
+        genome <- matrix(0, nrow=2 , ncol=(max(chroms$V3)))  
+        genome[1,] <- c(1:(max(chroms$V3)))
+        genome[2,] <- base 
+        #base=NA if plotting from test data, otherwise 2 if diploid
+        #or 4 if tetraploid 
+        for (ii in 1:dim(cnv.profile)[1]){
+          #convert segment start and end relative to chromosome 
+          #start to relative to genome start
+          start <- chroms[as.numeric(cnv.profile[ii,1]), 4] +
+            as.numeric(cnv.profile[ii,2])
+          end <- chroms[as.numeric(cnv.profile[ii,1]), 4] + 
+            as.numeric(cnv.profile[ii,3])
+          genome[2, start:end] <- as.numeric(cnv.profile[ii,5])
+        }
+        #sample so as to speed up plotting operation
+        short.x <- genome[1,][seq(1, length(genome[1,]), by=50)]
+        short.y <- genome[2,][seq(1, length(genome[2,]), by=50)]
+        plot(x = short.x, y=short.y, type="p", pch=20, cex=0.5, 
+             xaxt='n', xlim=c(0,max(chroms$V3)), xlab="", 
+             ylab="Scaled copy numbers",
+             xaxs = "i", ...)
+        title(main=paste(dim(cnv.profile)[1], " scaled copy number changes"),
+              line=1)
+        title(xlab="Chromosomes", line=1)
+        #annotate plot
+        abline(v = c(0,as.numeric(chroms$V3)), col="black")
+        at.vector <- as.numeric(chroms$V3 - chroms$V4)/2 + chroms$V4
+        names <- as.character(chroms$V1)
+        for (jj in 1:dim(chroms)[1]){
+          mtext(names[jj], side=1, at= at.vector[jj], cex=0.6)
+        }
+      }
+      
+      
+      
+      @
+      
+      In the plot below, the \texttt{cnv.profile.10}, a diploid genome with 
+      10 single copy changes with no noise plotted in its relative copy number 
+      profile, is plotted again, but scaled back to its absolute copy number profile. 
+      The second plot shows the sum of the z-scores of each copy number across 
+      different scaling factors from 0 to 10. As shown, there is a repeating pattern 
+      in the shape of the sum of z-scores, which touches 0 at multiples of 2. 
+      This is because multiplying by those factors will give integer values every time. 
+      Only the first of these  \texttt{final.scaling.idxs} is selected to be 
+      \texttt{best.final.scaling.idx}, in an attempt to select the lowest common multiple. 
+      
+      <<plotscaledcnv, eval=TRUE, include=TRUE, fig.height=4, fig.align='center'>>=
+      # out.width='1\\linewidth',
+      scaling.results <- minimize.z(cnv.profile.10.relative)
+      scaled.min.z <-  scaling.results[[1]]
+      scaled.cnv.profile <- scaling.results[[2]]
+      final.scaling <- scaling.results[[3]]
+      
+      par(mfrow=c(2,1), mar=c(3,6,2,2))
+      
+      plot.scaled.cnv(scaled.cnv.profile, base=final.scaling, chroms, yaxt='n', 
+                      ylim=c(0,2*final.scaling))
+      axis(2, at=seq(from=0, to=(2*final.scaling+1), by=0.5 ), 
+           labels=seq(from=0, to=(2*final.scaling+1), by=0.5 ))
+      
+      plot( x = seq(from=1, to=10, length.out = dim(scaled.min.z)[2]), 
+            y = colSums(scaled.min.z), type='l',
+            ylab="Sum",
+            xlab="",
+            xaxt='n')
+      title(xlab="Scaling factor", line=1.6, cex=0.8)
+      title(main="Sum of z-scores across scaling factors", line=1)
+      axis(1, at=seq(from=1, to=10, by=1), labels= seq(from=1, to=10, by=1), 
+           cex.axis=0.6, line=0)
+      abline(v=final.scaling, lty="dashed", col="blue")
+      
+      @
+      
+      
+      \section*{Transform relative copy number profile to absolute (with noise)}
+      
+      The same method can be used when recovering absolute copy number profiles
+      from original simulated data with noise. With noise, whilst the pattern
+      of the sum of z-scores across scaling factors remains, it gradually increases,
+      giving only one minimum instead of many minima as shown with no noise. This is
+      because even small differences from an integer become larger as they are multiplied.
+      
+      <<relativewithnoise, eval=TRUE, include=TRUE, fig.height=3, out.width='0.9\\linewidth', fig.align='center'>>=
+      cnv.profile.10.noisy <- simulate.copy.number.profile(10, chroms, base = 2,
+                                                     type='diploid.double.noise')
+      
+      convert.to.relative <- function(cnv.profile, base){
+        cnv.profile[,4] <- as.character(as.numeric(cnv.profile[,4])/base)
+        return(cnv.profile)
+      }
+      cnv.profile.10.noisy.relative <- convert.to.relative(cnv.profile.10.noisy, base=2)
+      
+      par(mfrow=c(1,1), mar=c(4,4,4,4))
+      plot.cnv(cnv.profile.10.noisy.relative, base=1, chroms, yaxt='n',  ylim=c(0,2))
+      axis(2, at=c(0,0.5,1,1.5,2), labels=c(0,0.5,1,1.5,2))
+      
+      
+      @
+      
+      
+      <<plotscaledcnvnoisy, eval=TRUE, include=TRUE, fig.height=4, fig.align='center' >>=
+      
+      scaling.results <- minimize.z(cnv.profile.10.noisy.relative)
+      scaled.min.z <-  scaling.results[[1]]
+      scaled.cnv.profile <- scaling.results[[2]]
+      final.scaling <- scaling.results[[3]]
+      
+      par(mfrow=c(2,1), mar=c(3,6,2,2))
+      
+      plot.scaled.cnv(scaled.cnv.profile, base=final.scaling, chroms, yaxt='n', 
+                      ylim=c(0,2*final.scaling))
+      axis(2, at=seq(from=0, to=(2*final.scaling+1), by=0.5 ), 
+           labels=seq(from=0, to=(2*final.scaling+1), by=0.5 ))
+      
+      plot( x = seq(from=1, to=10, length.out = dim(scaled.min.z)[2]), 
+            y = colSums(scaled.min.z), type='l',
+            ylab="Sum",
+            xlab="",
+            xaxt='n')
+      title(xlab="Scaling factor", line=1.6, cex=0.8)
+      title(main="Sum of z-scores across scaling factors", line=1)
+      axis(1, at=seq(from=1, to=10, by=1), labels= seq(from=1, to=10, by=1), 
+           cex.axis=0.8, line=0)
+      abline(v=final.scaling, lty="dashed", col="blue")
+      
+      
+      
+      @
+      
+      
+      \section*{Apply method to real data}
+      
+      The method described above is repeated and applied to 5 test data sets. 
+      Below every scaled copy number profile plot, the sum of the z-scores for each 
+      copy number across different scaling factors is shown. The blue dotted line
+      indicates the optimal scaling factor. For the first 3 of these test data, 
+      the scaling factor is around 2. For the first organoid, it is around 3, however,
+      for the last organoid it chooses a scaling factor of 1. Whilst this is unlikely
+      to be the case, it shows a weakness in the method used above when dealing with 
+      very noisy data. A possible way to improve the method above would be to multiply 
+      each copy number z-score by the size of the copy number change, such that larger
+      portions of the same copy number data have a higher importance when deciding the optimal 
+      scaling factor. 
+      
+      <<loadtestdata, eval=TRUE, include=FALSE>>=
+      test.data <- readRDS("relative_segment_tables.rds")
+      
+      adjust.test.data <- function(test.data){
+        for (cell in 1: length(test.data)){
+          test.data[[cell]][1]<- gsub("X", "23", as.character( unlist(test.data[[cell]][1])))
+          test.data[[cell]][1] <- gsub("Y", "24", as.character(unlist(test.data[[cell]][1])))
+          test.data[[cell]][2] <- as.numeric(unlist(test.data[[cell]][2] ))/ 1000
+          test.data[[cell]][3] <- as.numeric(unlist(test.data[[cell]][3])) / 1000
+        }
+        return(test.data)
+      }
+      
+      adjusted.test.data <- adjust.test.data(test.data)
+      
+      
+      scaling.results <- minimize.z(as.matrix(adjusted.test.data$organoid118976))
+  
+      @
+      
+      <<plottestresults, eval=TRUE, include=TRUE, out.width='0.9\\linewidth', fig.align='center', fig.height=4>>=
+            
+      for (test in adjusted.test.data){
+        test <- as.matrix(test)
+        par(mfrow=c(1,1), mar=c(4,4,4,2))
+        plot.cnv(test, base=NA, chroms, yaxt='n',  
+                 ylim=c(0,ceiling(max(as.numeric(test[,4]))) ))
+        axis(2, at=seq(from=0, to=ceiling(max(as.numeric(test[,4]))) ), 
+             labels=seq(from=0, to=ceiling(max(as.numeric(test[,4]))) ))
+        scaling.results <- minimize.z(test)
+        scaled.min.z <-  scaling.results[[1]]
+        scaled.cnv.profile <- scaling.results[[2]]
+        final.scaling <- scaling.results[[3]]
+        par(mfrow=c(2,1), mar=c(3,6,2,2))
+        plot.scaled.cnv(scaled.cnv.profile, base=final.scaling, chroms, yaxt='n', 
+                        ylim=c(0,2*final.scaling))
+        axis(2, at=seq(from=0, to=(2*final.scaling+1), by=0.5 ), 
+             labels=seq(from=0, to=(2*final.scaling+1), by=0.5 ))
+        
+        plot( x = seq(from=1, to=10, length.out = dim(scaled.min.z)[2]), 
+            y = colSums(scaled.min.z), type='l',
+            ylab="Sum",
+            xlab="",
+            xaxt='n')
+        title(xlab="Scaling factor", line=1.6, cex=0.8)
+        title(main="Sum of z-scores across scaling factors", line=1)
+        axis(1, at=seq(from=1, to=10, by=1), labels= seq(from=1, to=10, by=1), 
+             cex.axis=0.8, line=0)
+        abline(v=final.scaling, lty="dashed", col="blue")
+      }
+
+      @
+
+
+\end{document}
